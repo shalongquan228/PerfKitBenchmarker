@@ -316,6 +316,10 @@ class BaseVirtualMachine(resource.BaseResource):
       result['machine_type'] = self.machine_type
     return result
 
+  def GetInternalIps(self):
+    """Returns a list of internal ips."""
+    return [self.internal_ip]
+
 
 class BaseOsMixin(object):
   """The base class for OS Mixin classes.

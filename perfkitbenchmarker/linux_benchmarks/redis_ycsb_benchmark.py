@@ -116,18 +116,23 @@ def Run(benchmark_spec):
   num_ycsb = FLAGS.redis_ycsb_processes
   num_server = FLAGS.redis_total_num_processes
   num_client = FLAGS.ycsb_client_vms
+  internal_ips = redis_vm.GetInternalIps()
 
   # Each redis process use different ports, number of ycsb processes should
   # be at least as large as number of server processes, use round-robin
   # to assign target server process to each ycsb process
-  server_metadata = [{
-      'redis.ports': redis_server.REDIS_FIRST_PORT + i % num_server}
-      for i in range(num_ycsb)]
+  metadata = []
+  for ip in internal_ips:
+    metadata.extend([{
+        'redis.host': ip,
+        'redis.ports': redis_server.REDIS_FIRST_PORT + i} for i in range(num_server)])
+
+  lenmeta = len(metadata)
+  server_metadata = metadata * (num_ycsb / lenmeta) + metadata[:(num_ycsb % lenmeta)]
 
   executor = ycsb.YCSBExecutor(
       'redis', **{
           'shardkeyspace': True,
-          'redis.host': redis_vm.internal_ip,
           'perclientparam': server_metadata})
 
   metadata = {'ycsb_client_vms': num_client,

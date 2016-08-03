@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import threading
+import time
 
 from perfkitbenchmarker import disk
 from perfkitbenchmarker import errors
@@ -32,6 +33,7 @@ from perfkitbenchmarker import vm_util
 from perfkitbenchmarker import windows_virtual_machine
 from perfkitbenchmarker.providers.aws import aws_disk
 from perfkitbenchmarker.providers.aws import aws_network
+from perfkitbenchmarker.providers.aws import aws_network_interface
 from perfkitbenchmarker.providers.aws import util
 from perfkitbenchmarker import providers
 
@@ -122,6 +124,8 @@ class AwsVirtualMachine(virtual_machine.BaseVirtualMachine):
     self.user_data = None
     self.network = aws_network.AwsNetwork.GetNetwork(self)
     self.firewall = aws_network.AwsFirewall.GetFirewall()
+    self.internal_ips = []
+    self.enis = []
 
   @property
   def group_id(self):
@@ -208,12 +212,16 @@ class AwsVirtualMachine(virtual_machine.BaseVirtualMachine):
     instance = response['Reservations'][0]['Instances'][0]
     self.ip_address = instance['PublicIpAddress']
     self.internal_ip = instance['PrivateIpAddress']
+    self.internal_ips.append(self.internal_ip)
     if util.IsRegion(self.zone):
       self.zone = str(instance['Placement']['AvailabilityZone'])
     util.AddDefaultTags(self.id, self.region)
 
     assert self.group_id == instance['SecurityGroups'][0]['GroupId'], (
         self.group_id, instance['SecurityGroups'][0]['GroupId'])
+    if FLAGS.aws_multiple_enis:
+      time.sleep(60)
+      self.CreateNetworkInterfaces()
 
   def _CreateDependencies(self):
     """Create VM dependencies."""
@@ -222,6 +230,13 @@ class AwsVirtualMachine(virtual_machine.BaseVirtualMachine):
     self.image = self.image or self._GetDefaultImage(self.machine_type,
                                                      self.region)
     self.AllowRemoteAccessPorts()
+    """if FLAGS.aws_multiple_enis:
+      for _ in range(
+          aws_network_interface.NUM_NETWORK_INTERFACES[self.machine_type]):
+      eni = aws_network_interface.AwsNetworkInterface(self.network)
+      eni._Create()
+      self.enis.append(eni)"""
+
 
   def _DeleteDependencies(self):
     """Delete VM dependencies."""
@@ -264,6 +279,11 @@ class AwsVirtualMachine(virtual_machine.BaseVirtualMachine):
         '--region=%s' % self.region,
         '--instance-ids=%s' % self.id]
     vm_util.IssueCommand(delete_cmd)
+    if FLAGS.aws_multiple_enis:
+      for eni in self.enis:
+        eni.Detach()
+        eni._Delete()
+
 
   def _Exists(self):
     """Returns true if the VM exists."""
@@ -321,6 +341,48 @@ class AwsVirtualMachine(virtual_machine.BaseVirtualMachine):
     """
     return ['/dev/xvd%s' % chr(ord(DRIVE_START_LETTER) + i)
             for i in xrange(NUM_LOCAL_VOLUMES[self.machine_type])]
+
+  def CreateNetworkInterfaces(self):
+    """Create VM's network interfaces. """
+    for _ in range(
+        1, aws_network_interface.NUM_NETWORK_INTERFACES[self.machine_type]):
+      eni = aws_network_interface.AwsNetworkInterface(self.network)
+      eni._Create()
+      eni.Attach(self)
+      self.enis.append(eni)
+      self.internal_ips.append(eni.internal_ip)
+      self._ConfigureNetworkInterface(eni)
+    self.RemoteCommand('sudo ip route flush cache')
+
+  def GetInternalIps(self):
+    """Return a list of internal ips."""
+    return self.internal_ips
+
+  def _ConfigureNetworkInterface(self, eni):
+    """Configure a network interface."""
+    table = 'out%s' % eni.GetDeviceName()
+    index = 200 + int(eni.GetDeviceName()[-1])
+    self.RemoteCommand(
+        'echo "%s %s" | sudo tee -a '
+        '/etc/iproute2/rt_tables' % (index, table))
+    self.RemoteCommand(
+        'sudo cp /etc/network/interfaces.d/eth0.cfg '
+        '/etc/network/interfaces.d/%s.cfg' % eni.GetDeviceName())
+    self.RemoteCommand(
+        'echo "auto %s" | sudo tee -a /etc/network/interfaces' % eni.GetDeviceName())
+    self.RemoteCommand(
+        'echo "iface %s inet dhcp" | sudo tee -a '
+        '/etc/network/interfaces' % eni.GetDeviceName())
+    self.RemoteCommand('sudo ifup %s' % eni.GetDeviceName())
+    gateway = self.network.subnet.cidr_block.split('.')[:-1]
+    gateway.append('1')
+    self.RemoteCommand(
+        'sudo ip route add default via %s dev %s table %s' % (
+            '.'.join(gateway), eni.GetDeviceName(), table))
+    self.RemoteCommand(
+        'sudo ip rule add from %s/32 table %s' % (eni.internal_ip, table))
+    self.RemoteCommand('sudo ip rule add to %s/32 table %s' % (
+        eni.internal_ip, table))
 
   def AddMetadata(self, **kwargs):
     """Adds metadata to the VM."""

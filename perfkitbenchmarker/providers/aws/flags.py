@@ -24,3 +24,9 @@ flags.DEFINE_integer('aws_provisioned_iops', None,
 flags.DEFINE_string('aws_emr_loguri', None,
                     'The log-uri parameter to pass to AWS when creating a '
                     'cluster.  If not set, a bucket will be created.')
+
+flags.DEFINE_string('aws_multiple_enis', False,
+                    'Creates multiple Elastic Network Interfaces per instance,'
+                    ' which will increase packet per second limit, but '
+                    'benchmarks need to be aware of multiple internal ips in '
+                    'order to benefit from it.')
