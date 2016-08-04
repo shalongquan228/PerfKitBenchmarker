@@ -281,7 +281,10 @@ class AwsVirtualMachine(virtual_machine.BaseVirtualMachine):
     vm_util.IssueCommand(delete_cmd)
     if FLAGS.aws_multiple_enis:
       for eni in self.enis:
-        eni.Detach()
+        try:
+          eni.Detach()
+        except:
+          pass
         eni._Delete()
 
 
